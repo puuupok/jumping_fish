@@ -1,0 +1,263 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Fishy Screen</title>
+  <style>
+    html, body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      overflow: hidden;
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+      user-select: none;
+    }
+
+    /* Фон */
+    body {
+      background: url("1.png") center / cover no-repeat fixed;
+    }
+
+    /* Лёгкий "туман", чтобы рыбки читались лучше */
+    .veil {
+      position: fixed;
+      inset: 0;
+      background: radial-gradient(circle at 30% 20%, rgba(255,255,255,.15), rgba(255,255,255,0) 55%),
+                  radial-gradient(circle at 80% 30%, rgba(255,255,255,.10), rgba(255,255,255,0) 55%);
+      pointer-events: none;
+    }
+
+    #ocean {
+      position: fixed;
+      inset: 0;
+      overflow: hidden;
+    }
+
+    .fish {
+      position: absolute;
+      will-change: transform;
+      cursor: pointer;
+      /* чтобы клики ловились нормально */
+      touch-action: manipulation;
+      filter: drop-shadow(0 8px 10px rgba(0,0,0,.18));
+    }
+
+    .fish img {
+      display: block;
+      width: 100%;
+      height: auto;
+      pointer-events: none; /* чтобы hover/click был на контейнере .fish */
+      transform: translateY(0);
+      will-change: transform;
+    }
+
+    /* Чуть больше "живости" при наведении */
+    .fish.is-active {
+      filter: drop-shadow(0 10px 14px rgba(0,0,0,.25));
+    }
+
+    /* Прыжок при клике (на сам спрайт, чтобы не ломать transform контейнера) */
+    .fish img.jump {
+      animation: jump 260ms cubic-bezier(.2,.9,.2,1);
+    }
+
+    @keyframes jump {
+      0%   { transform: translateY(0) scale(1); }
+      45%  { transform: translateY(-26px) scale(1.02); }
+      100% { transform: translateY(0) scale(1); }
+    }
+
+    /* Небольшая подсказка */
+    .hint {
+      position: fixed;
+      left: 14px;
+      bottom: 14px;
+      padding: 10px 12px;
+      background: rgba(255,255,255,.75);
+      backdrop-filter: blur(6px);
+      border-radius: 14px;
+      font-size: 14px;
+      color: rgba(0,0,0,.75);
+      box-shadow: 0 10px 24px rgba(0,0,0,.12);
+      pointer-events: none;
+    }
+  </style>
+</head>
+<body>
+  <div id="ocean"></div>
+  <div class="veil"></div>
+  <div class="hint">Наведи на рыбку — она начнёт активно плавать. Клик — подпрыгнет 🐟</div>
+
+  <script>
+    (() => {
+      const ocean = document.getElementById("ocean");
+      const SPRITES = ["2.png", "3.png", "4.png"];
+
+      // Настройки — можешь менять
+      const FISH_COUNT = 14;          // сколько рыбок
+      const MIN_SIZE = 70;            // минимальный размер (px)
+      const MAX_SIZE = 170;           // максимальный размер (px)
+      const BASE_SPEED = [25, 65];    // обычная скорость (px/sec) min/max
+      const ACTIVE_SPEED = [90, 190]; // скорость при наведении (px/sec) min/max
+
+      const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+      const rand = (a, b) => a + Math.random() * (b - a);
+      const pick = (arr) => arr[(Math.random() * arr.length) | 0];
+
+      let W = window.innerWidth;
+      let H = window.innerHeight;
+
+      const mouse = { x: W/2, y: H/2 };
+      window.addEventListener("mousemove", (e) => { mouse.x = e.clientX; mouse.y = e.clientY; }, { passive: true });
+      window.addEventListener("resize", () => { W = window.innerWidth; H = window.innerHeight; });
+
+      class Fish {
+        constructor() {
+          this.el = document.createElement("div");
+          this.el.className = "fish";
+
+          this.img = document.createElement("img");
+          this.img.src = pick(SPRITES);
+          this.el.appendChild(this.img);
+
+          // размеры
+          this.size = rand(MIN_SIZE, MAX_SIZE);
+          this.el.style.width = this.size + "px";
+
+          // позиция
+          this.x = rand(0, Math.max(1, W - this.size));
+          this.y = rand(0, Math.max(1, H - this.size));
+
+          // скорость/направление
+          const speed = rand(BASE_SPEED[0], BASE_SPEED[1]);
+          const ang = rand(0, Math.PI * 2);
+          this.vx = Math.cos(ang) * speed;
+          this.vy = Math.sin(ang) * speed;
+
+          // режимы
+          this.active = false;
+          this.target = { x: rand(0, W), y: rand(0, H) };
+          this.targetTimer = 0;
+
+          // небольшая плавная "волнушка"
+          this.wobbleSeed = rand(0, 1000);
+
+          // события
+          this.el.addEventListener("mouseenter", () => {
+            this.active = true;
+            this.el.classList.add("is-active");
+            this.pickNewTarget(true);
+          });
+
+          this.el.addEventListener("mouseleave", () => {
+            this.active = false;
+            this.el.classList.remove("is-active");
+          });
+
+          this.el.addEventListener("click", () => {
+            this.img.classList.remove("jump");
+            // перезапуск анимации
+            void this.img.offsetWidth;
+            this.img.classList.add("jump");
+          });
+
+          ocean.appendChild(this.el);
+        }
+
+        pickNewTarget(forceFar = false) {
+          // цель "по всему экрану"
+          let tx = rand(0, W);
+          let ty = rand(0, H);
+
+          if (forceFar) {
+            // чтобы при наведении цель не была рядом — рыбка реально уходит гулять
+            const tries = 6;
+            for (let i = 0; i < tries; i++) {
+              const cx = rand(0, W), cy = rand(0, H);
+              const dx = cx - this.x, dy = cy - this.y;
+              if (dx*dx + dy*dy > (Math.min(W,H)*0.18) ** 2) { tx = cx; ty = cy; break; }
+            }
+          }
+
+          this.target.x = tx;
+          this.target.y = ty;
+          this.targetTimer = rand(0.7, 1.4); // через сколько секунд сменить цель
+        }
+
+        update(dt, t) {
+          const maxX = Math.max(0, W - this.size);
+          const maxY = Math.max(0, H - this.size);
+
+          // В активном режиме (наведён) — рыбка "гуляет" к целям по экрану
+          if (this.active) {
+            this.targetTimer -= dt;
+            if (this.targetTimer <= 0) this.pickNewTarget();
+
+            const dx = this.target.x - this.x;
+            const dy = this.target.y - this.y;
+            const dist = Math.hypot(dx, dy) || 1;
+
+            // скорость активного режима
+            const desiredSpeed = rand(ACTIVE_SPEED[0], ACTIVE_SPEED[1]);
+            const desiredVx = (dx / dist) * desiredSpeed;
+            const desiredVy = (dy / dist) * desiredSpeed;
+
+            // плавное "руление" (steering)
+            const steer = 0.09;
+            this.vx += (desiredVx - this.vx) * steer;
+            this.vy += (desiredVy - this.vy) * steer;
+          } else {
+            // обычный режим — лёгкое дрейфование + немного случайного "плавания"
+            const drift = 0.012;
+            this.vx += (rand(-10, 10) - this.vx * 0.02) * drift;
+            this.vy += (rand(-10, 10) - this.vy * 0.02) * drift;
+
+            // ограничим общую скорость
+            const sp = Math.hypot(this.vx, this.vy);
+            const spMax = BASE_SPEED[1];
+            if (sp > spMax) {
+              this.vx = (this.vx / sp) * spMax;
+              this.vy = (this.vy / sp) * spMax;
+            }
+          }
+
+          // движение
+          this.x += this.vx * dt;
+          this.y += this.vy * dt;
+
+          // отскок от краёв
+          if (this.x < 0) { this.x = 0; this.vx = Math.abs(this.vx); }
+          if (this.x > maxX) { this.x = maxX; this.vx = -Math.abs(this.vx); }
+          if (this.y < 0) { this.y = 0; this.vy = Math.abs(this.vy); }
+          if (this.y > maxY) { this.y = maxY; this.vy = -Math.abs(this.vy); }
+
+          // ориентация: куда плывёт — туда и “смотрит”
+          const flip = this.vx < 0 ? -1 : 1;
+          const rot = clamp(this.vy * 0.15, -12, 12); // небольшой наклон
+          const wobble = Math.sin((t + this.wobbleSeed) * 2.2) * 2.2; // лёгкая волнушка
+
+          this.el.style.transform =
+            `translate3d(${this.x}px, ${this.y + wobble}px, 0) scaleX(${flip}) rotate(${rot}deg)`;
+        }
+      }
+
+      // Создаём рыбок
+      const fishes = Array.from({ length: FISH_COUNT }, () => new Fish());
+
+      // Анимационный цикл
+      let last = performance.now();
+      function tick(now) {
+        const dt = Math.min(0.033, (now - last) / 1000); // защита от "скачков"
+        last = now;
+
+        const t = now / 1000;
+        for (const f of fishes) f.update(dt, t);
+
+        requestAnimationFrame(tick);
+      }
+      requestAnimationFrame(tick);
+    })();
+  </script>
+</body>
+</html>
